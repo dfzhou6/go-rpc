@@ -133,8 +133,8 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 func (s *Server) handleRequest(cc codec.Codec, req *request, mtx *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	log.Println(req.h, req.argv.Elem())
-	req.replyV = reflect.ValueOf(fmt.Sprintf("rpc rsp %d", req.h.Seq))
+	log.Println("server handle request: header:", req.h, "args:", req.argv.Elem())
+	req.replyV = reflect.ValueOf(fmt.Sprintf("rpc rsp %s", req.argv.Elem()))
 	s.sendResponse(cc, req.h, req.replyV.Interface(), mtx)
 }
 

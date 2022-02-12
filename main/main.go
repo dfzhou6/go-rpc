@@ -1,12 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	go_rpc "go-rpc"
-	"go-rpc/codec"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -14,26 +13,30 @@ func main() {
 	addr := make(chan string)
 	go startServer(addr)
 
-	conn, _ := net.Dial("tcp", <-addr)
+	client, _ := go_rpc.Dial("tcp", <-addr)
 	defer func() {
-		_ = conn.Close()
+		_ = client.Close()
 	}()
 
 	time.Sleep(time.Second)
 
-	_ = json.NewEncoder(conn).Encode(go_rpc.DefaultOption)
-	cc := codec.NewGobCodec(conn)
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		h := &codec.Header{
-			ServiceMethod: "zdf.laugh",
-			Seq: uint64(i),
-		}
-		_ = cc.Write(h, fmt.Sprintf("go rpc req %d", h.Seq))
-		_ = cc.ReadHeader(h)
-		reply := ""
-		_ = cc.ReadBody(&reply)
-		log.Println("reply:", reply)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			serviceMethod := "hello.zdf"
+			args := fmt.Sprintf("go rpc req %d", i)
+			reply := ""
+			if err := client.Call(serviceMethod, args, &reply); err != nil {
+				log.Fatal(fmt.Sprintf("call %s failed %s\n", serviceMethod, err))
+			}
+			log.Println("client receive reply:", reply)
+		}(i)
 	}
+
+	wg.Wait()
 }
 
 func startServer(addr chan string) {
