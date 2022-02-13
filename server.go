@@ -2,12 +2,13 @@ package go_rpc
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"go-rpc/codec"
 	"io"
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -24,7 +25,7 @@ var DefaultOption = &Option{
 }
 
 type Server struct {
-
+	serviceMap sync.Map
 }
 
 func NewServer() *Server {
@@ -100,6 +101,8 @@ func (s *Server) serveCodec(cc codec.Codec) {
 type request struct {
 	h *codec.Header
 	argv, replyV reflect.Value
+	mType *methodType
+	svc *service
 }
 
 func (s *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
@@ -122,8 +125,19 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	}
 
 	req := &request{h: h}
-	req.argv = reflect.New(reflect.TypeOf(""))
-	if err = cc.ReadBody(req.argv.Interface()); err != nil {
+	req.svc, req.mType, err = s.findService(h.ServiceMethod)
+	if err != nil {
+		return req, err
+	}
+
+	req.argv = req.mType.newArgv()
+	req.replyV = req.mType.newReplyV()
+	argvInter := req.argv.Interface()
+	if req.argv.Type().Kind() != reflect.Ptr {
+		argvInter = req.argv.Addr().Interface()
+	}
+
+	if err = cc.ReadBody(argvInter); err != nil {
 		log.Println("rpc server: read argv error", err)
 	}
 
@@ -133,8 +147,14 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 func (s *Server) handleRequest(cc codec.Codec, req *request, mtx *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	log.Println("server handle request: header:", req.h, "args:", req.argv.Elem())
-	req.replyV = reflect.ValueOf(fmt.Sprintf("rpc rsp %s", req.argv.Elem()))
+	log.Println("server handle request: header:", req.h, "args:", req.argv)
+	err := req.svc.call(req.mType, req.argv, req.replyV)
+	if err != nil {
+		req.h.Error = err.Error()
+		s.sendResponse(cc, req.h, invalidRequest, mtx)
+		return
+	}
+
 	s.sendResponse(cc, req.h, req.replyV.Interface(), mtx)
 }
 
@@ -145,4 +165,41 @@ func (s *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{},
 	if err := cc.Write(h, body); err != nil {
 		log.Println("rpc server: write rsp error", err)
 	}
+}
+
+func (s *Server) Register(rcv interface{}) error {
+	newS := newService(rcv)
+	if _, dup := s.serviceMap.LoadOrStore(newS.name, newS); dup {
+		return errors.New("rpc service already defined:" + newS.name)
+	}
+
+	return nil
+}
+
+func Register(rcv interface{}) error {
+	return DefaultServer.Register(rcv)
+}
+
+func (s *Server) findService(serviceMethod string) (svc *service, mType *methodType, err error) {
+	dot := strings.LastIndex(serviceMethod, ".")
+	if dot < 0 {
+		err = errors.New("rpc server: service/method request ill-formed: " + serviceMethod)
+		return
+	}
+
+	serviceName, methodName := serviceMethod[:dot], serviceMethod[dot+1:]
+	svcInter, ok := s.serviceMap.Load(serviceName)
+	if !ok {
+		err = errors.New("rpc server: can not find service " + serviceName)
+		return
+	}
+
+	svc = svcInter.(*service)
+	mType = svc.methods[methodName]
+	if mType == nil {
+		err = errors.New("rpc server: can not find method " + methodName)
+		return
+	}
+
+	return
 }
