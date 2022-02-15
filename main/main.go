@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	go_rpc "go-rpc"
 	"log"
@@ -29,7 +30,8 @@ func main() {
 			serviceMethod := "Age.Sum"
 			args := AgeArgs{Num1: i + 1, Num2: i + 2}
 			var reply int
-			if err := client.Call(serviceMethod, args, &reply); err != nil {
+			ctx, _ := context.WithTimeout(context.Background(), time.Second)
+			if err := client.Call(ctx, serviceMethod, args, &reply); err != nil {
 				log.Fatal(fmt.Sprintf("call %s failed %s\n", serviceMethod, err))
 			}
 

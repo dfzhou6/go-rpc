@@ -3,6 +3,7 @@ package go_rpc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go-rpc/codec"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 const MagicNumber = 0x3bef5c
@@ -17,11 +19,14 @@ const MagicNumber = 0x3bef5c
 type Option struct {
 	MagicNumber int
 	CodecType codec.Type
+	ConnectTimeout time.Duration
+	HandleTimeout time.Duration
 }
 
 var DefaultOption = &Option{
 	MagicNumber: MagicNumber,
 	CodecType: codec.GobType,
+	ConnectTimeout: time.Second * 10,
 }
 
 type Server struct {
@@ -91,7 +96,7 @@ func (s *Server) serveCodec(cc codec.Codec) {
 		}
 
 		wg.Add(1)
-		go s.handleRequest(cc, req, mtx, wg)
+		go s.handleRequest(cc, req, mtx, wg, DefaultOption.HandleTimeout)
 	}
 
 	wg.Wait()
@@ -144,18 +149,40 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	return req, nil
 }
 
-func (s *Server) handleRequest(cc codec.Codec, req *request, mtx *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Server) handleRequest(cc codec.Codec, req *request, mtx *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
 
+	callCh, sendCh := make(chan struct{}, 1), make(chan struct{}, 1)
+
 	log.Println("server handle request: header:", req.h, "args:", req.argv)
-	err := req.svc.call(req.mType, req.argv, req.replyV)
-	if err != nil {
-		req.h.Error = err.Error()
-		s.sendResponse(cc, req.h, invalidRequest, mtx)
+
+	go func() {
+		err := req.svc.call(req.mType, req.argv, req.replyV)
+		callCh <- struct{}{}
+		if err != nil {
+			req.h.Error = err.Error()
+			s.sendResponse(cc, req.h, invalidRequest, mtx)
+			sendCh <- struct{}{}
+			return
+		}
+
+		s.sendResponse(cc, req.h, req.replyV.Interface(), mtx)
+		sendCh <- struct{}{}
+	}()
+
+	if timeout == 0 {
+		<-callCh
+		<-sendCh
 		return
 	}
 
-	s.sendResponse(cc, req.h, req.replyV.Interface(), mtx)
+	select {
+	case <-time.After(timeout):
+		req.h.Error = fmt.Sprintf("rpc server handle timeout must be %s", timeout)
+		s.sendResponse(cc, req.h, invalidRequest, mtx)
+	case <-callCh:
+		<-sendCh
+	}
 }
 
 func (s *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{}, mtx *sync.Mutex) {
