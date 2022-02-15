@@ -6,15 +6,20 @@ import (
 	go_rpc "go-rpc"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
 
 func main() {
-	addr := make(chan string)
-	go startServer(addr)
+	log.SetFlags(0)
+	ch := make(chan string)
+	go call(ch)
+	startHttpServer(ch)
+}
 
-	client, _ := go_rpc.Dial("tcp", <-addr)
+func call(addCh chan string) {
+	client, _ := go_rpc.DialHTTP("tcp", <-addCh)
 	defer func() {
 		_ = client.Close()
 	}()
@@ -56,6 +61,23 @@ func startServer(addr chan string) {
 	log.Println("start rpc server on addr", l.Addr())
 	addr <- l.Addr().String()
 	go_rpc.Accept(l)
+}
+
+func startHttpServer(addr chan string) {
+	var age Age
+	if err := go_rpc.Register(&age); err != nil {
+		log.Fatal("register service err", err)
+	}
+
+	go_rpc.HandleHTTP()
+
+	l, _ := net.Listen("tcp", ":9999")
+
+	log.Println("start http server on addr", l.Addr())
+
+	addr <- l.Addr().String()
+
+	_ = http.Serve(l, nil)
 }
 
 type Age int
